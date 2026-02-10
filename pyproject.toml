@@ -7,7 +7,7 @@ name = "promptprocessor"
 version = "0.0.1"
 description = "A node for our project, which will get the prompts form models and use them to image generation."
 authors = [
-  {name = "Worldjks", email = "3436055238@qq.com"}
+  {name = "kamilhzn", email = "3436055238@qq.com"}
 ]
 readme = "README.md"
 license = {text = "GNU General Public License v3"}
