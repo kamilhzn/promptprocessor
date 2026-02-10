@@ -118,17 +118,28 @@ class ElementTransform:
             "required": {
                 "element_str": ("STRING", {"default": "", "description": "输入要转换的元素描述"}),
                 "color_str": ("STRING", {"default": "", "description": "输入要转换的颜色描述"}),
+                "model": ("MODEL", {"default": "cocoballking", "description": "选择使用的转换模型"}),
             },
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("transformed_element_str", "color_str", "style_str", "sex_str", "clothes_str")
+    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING", "STRING")
+    RETURN_NAMES = (
+        "transformed_element_str",
+        "color_str",
+        "style_str",
+        "sex_str",
+        "clothes_str",
+        "hair_str",
+        "face_str",
+        "weapon_str",
+        "object_str",
+    )
     FUNCTION = "transform_element"
     CATEGORY = "Prompt Processor/element2prompt"
     DESCRIPTION = "Transform an element description."
 
     def transform_element(self, element_str, color_str):
-        # TODO:完善颜色转换逻辑，目前先返回占位字符串
+        # TODO:完善元素转换逻辑，目前先返回占位字符串
         style = ""
         sex = ""
         clothes = ""
