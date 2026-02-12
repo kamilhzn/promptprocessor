@@ -3,6 +3,7 @@ import torchvision.transforms.functional as F
 from torchvision import transforms
 from .primary_secendary_rgb_and_richness import primary_secondary_richness_lab
 import folder_paths
+import numpy as np
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # 模型路径配置
@@ -77,42 +78,44 @@ class ResizeAndPad:
         return img
 
 
-import torch
-import numpy as np
-
-
-def get_bbox_from_comfy_image(comfy_image, alpha_threshold=1):
+def get_bbox_from_comfy_image(comfy_image, mask=None, alpha_threshold=1):
     """
     从ComfyUI的IMAGE张量中计算主体外接矩形的宽高比（width / height）
     :param comfy_image: ComfyUI图片节点输出的张量，shape=[1, H, W, C]，取值范围0-1
-    :param alpha_threshold: 透明通道阈值（仅当图片有4通道时生效）
+    :param mask: ComfyUI蒙版张量，shape=[B, H, W] 或 [H,W]，取值范围0-1（None则使用原图alpha）
+    :param alpha_threshold: 透明通道阈值（仅当无mask且图片有4通道时生效）
     :return: 宽高比（width/height），无主体时返回None
     """
-    # 1. 处理ComfyUI张量格式：移除batch维度 + 转为numpy数组 + 缩放至0-255
+    # 处理ComfyUI张量格式：移除batch维度 + 转为numpy数组 + 缩放至0-255
     img_tensor = comfy_image.squeeze(0)  # [H, W, C]
     img_np = (img_tensor.cpu().numpy() * 255).astype(np.uint8)  # 转为0-255的numpy数组
 
-    # 2. 提取alpha通道（有透明通道时用alpha判断主体，无则默认全为主体）
-    if img_np.shape[-1] == 4:
-        # 有透明通道：用alpha通道筛选非透明区域
-        alpha = img_np[:, :, 3]
-        ys, xs = np.where(alpha > alpha_threshold)
+    # 使用mask筛选有效像素，无mask则用alpha通道
+    if mask is not None:
+        # 处理mask形状：统一转为 [H, W]
+        mask_tensor = mask.squeeze(0) if len(mask.shape) == 3 else mask  # 移除batch维度
+        mask_np = mask_tensor.cpu().numpy()  # [H, W]，0-1范围
+        ys, xs = np.where(mask_np > 0.0)  # 蒙版值>0的区域为有效主体
     else:
-        # 无透明通道：默认整个图片都是主体
-        h, w = img_np.shape[:2]
-        ys, xs = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
-        ys = ys.flatten()
-        xs = xs.flatten()
+        # 无mask：用alpha通道（有则用，无则全选）
+        if img_np.shape[-1] == 4:
+            alpha = img_np[:, :, 3]
+            ys, xs = np.where(alpha > alpha_threshold)
+        else:
+            h, w = img_np.shape[:2]
+            ys, xs = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
+            ys = ys.flatten()
+            xs = xs.flatten()
 
-    # 3. 检查是否有主体区域
+    # 检查是否有主体区域
     if len(xs) == 0:
         return None  # 无主体
 
-    # 4. 计算外接矩形的边界
+    # 计算外接矩形的边界
     xmin, xmax = xs.min(), xs.max()
     ymin, ymax = ys.min(), ys.max()
 
-    # 5. 计算宽高和宽高比
+    # 计算宽高和宽高比
     width = xmax - xmin
     height = ymax - ymin
 
@@ -150,8 +153,8 @@ class ImageElementGet:
         # 更新当前模型路径
         self.current_model_path = model_path
 
-    def preprocess_image(self, comfy_image):
-        """处理ComfyUI格式的图片"""
+    def preprocess_image(self, comfy_image, mask=None):
+        """处理ComfyUI格式的图片（结合mask裁剪有效区域）"""
         # 转换tensor格式：[1, H, W, C] -> [C, H, W]，并缩放至0-255
         img_tensor = comfy_image.squeeze(0).permute(2, 0, 1) * 255.0
         img_tensor = img_tensor.to(torch.uint8)
@@ -159,6 +162,18 @@ class ImageElementGet:
         # 转换为PIL Image
         img = F.to_pil_image(img_tensor)
         img = img.convert("RGB")
+
+        # 裁剪mask有效区域
+        if mask is not None:
+            mask_tensor = mask.squeeze(0) if len(mask.shape) == 3 else mask  # [H, W]
+            mask_np = mask_tensor.cpu().numpy()
+            # 找到mask有效区域的外接矩形
+            ys, xs = np.where(mask_np > 0.0)
+            if len(xs) > 0 and len(ys) > 0:
+                xmin, xmax = xs.min(), xs.max()
+                ymin, ymax = ys.min(), ys.max()
+                # 裁剪图片到mask有效区域
+                img = img.crop((xmin, ymin, xmax + 1, ymax + 1))
 
         transform = transforms.Compose(
             [
@@ -182,6 +197,7 @@ class ImageElementGet:
             "required": {
                 "pic": ("IMAGE", {"description": "输入要提取元素的图像"}),
                 "model_name": (model_list if model_list else ["请放入模型到kind_dynasty目录"],),
+                "mask": ("MASK", {"description": "蒙版"}),
             },
         }
 
@@ -191,11 +207,10 @@ class ImageElementGet:
     CATEGORY = "Prompt Processor/image2prompt"
     DESCRIPTION = "Get a specific element from an image."
 
-    def get_element(self, pic, model_name):
+    def get_element(self, pic, model_name, mask):
         # 处理朝代与类型
         self.load_model(model_name)  # 加载选择的模型
-
-        processed_img = self.preprocess_image(pic)  # 图片预处理
+        processed_img = self.preprocess_image(pic, mask)  # 图片预处理
 
         with torch.no_grad():  # 模型推理（关闭梯度计算加速）
             output = self.model(processed_img)
@@ -204,9 +219,9 @@ class ImageElementGet:
         dynasty_result = lisan_output(output["dynasty"], dynasty_labels)
 
         # 处理颜色与丰富度
-        p, s, r = primary_secondary_richness_lab(pic)
+        p, s, r = primary_secondary_richness_lab(pic, mask=mask)
 
         # 处理宽高比
-        ratio = get_bbox_from_comfy_image(pic, alpha_threshold=1)
+        ratio = get_bbox_from_comfy_image(pic, mask=mask, alpha_threshold=1)
 
-        return (kind_result, dynasty_result, p, s, r, ratio)
+        return (kind_result, dynasty_result, str(p), str(s), r, ratio if ratio else 0.0)
