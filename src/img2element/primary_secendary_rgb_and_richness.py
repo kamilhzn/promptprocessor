@@ -237,33 +237,58 @@ def get_richness(richness):
         return "纯色"
 
 
-def primary_secondary_richness_lab(comfy_image_tensor, de_th=12, primary_ratio=0.1, secondary_ratio=0.01):
+def primary_secondary_richness_lab(comfy_image_tensor, mask=None, de_th=12, primary_ratio=0.1, secondary_ratio=0.01):
+    """
+    计算主色调/副色调/色彩丰富度（结合mask筛选有效像素）
+    :param comfy_image_tensor: ComfyUI图片张量 [1, H, W, C]
+    :param mask: ComfyUI蒙版张量 [B, H, W] 或 [H,W]，0-1范围
+    :param de_th: 颜色分桶阈值
+    :param primary_ratio: 主色调占比阈值
+    :param secondary_ratio: 副色调占比阈值
+    :return: 主色调列表, 副色调列表, 丰富度描述
+    """
     # 1. 转换ComfyUI张量为RGB数组
     # - 移除batch维度 → 调整通道顺序 → 缩放至0-255 → 转为numpy数组
     img_tensor = comfy_image_tensor.squeeze(0)  # [H, W, C]
     img_np = (img_tensor.cpu().numpy() * 255).astype(np.uint8)  # 0-255
 
-    # 2. 处理透明通道（如果有）
-    if img_np.shape[-1] == 4:
-        alpha = img_np[:, :, 3]
-        rgb = img_np[:, :, :3][alpha > 0] / 255.0  # 只保留不透明区域
+    # 2. 结合mask筛选有效像素
+    if mask is not None:
+        # 处理mask形状：统一转为 [H, W]
+        mask_tensor = mask.squeeze(0) if len(mask.shape) == 3 else mask  # 移除batch维度
+        mask_np = mask_tensor.cpu().numpy()  # [H, W]，0-1范围
+        # 筛选mask>0的有效像素
+        valid_mask = mask_np > 0.0
+        if img_np.shape[-1] == 4:
+            # 同时考虑alpha通道（mask + alpha双重筛选）
+            alpha = img_np[:, :, 3]
+            valid_mask = valid_mask & (alpha > 1)
+        # 提取有效像素的RGB
+        rgb = img_np[valid_mask][:, :3] / 255.0 if np.sum(valid_mask) > 0 else np.array([])
     else:
-        rgb = img_np / 255.0  # 无透明通道直接使用
+        # 无mask：使用alpha通道（有则筛选，无则全选）
+        if img_np.shape[-1] == 4:
+            alpha = img_np[:, :, 3]
+            rgb = img_np[alpha > 1][:, :3] / 255.0
+        else:
+            rgb = img_np.reshape(-1, 3) / 255.0
 
     if rgb.size == 0:
         return [], [], "纯色"
 
+    # 3. 颜色空间转换（RGB → LAB）
     lab_pixels = rgb2lab(rgb.reshape(-1, 3))
 
-    # 灰/黑/白分桶
+    # 4. 灰/黑/白分桶
     blacks, whites, grays, colors = split_bw_gray(lab_pixels)
 
-    # 彩色初分桶
+    # 5. 彩色初分桶
     cb, cc = bucket_colors(colors, de_th=de_th)
 
-    # 彩色二次合并
+    # 6. 彩色二次合并
     cb, cc = merge_color_clusters(cb, cc)
 
+    # 7. 合并黑白灰桶到总桶
     centers = []
     counts = []
 
@@ -286,20 +311,24 @@ def primary_secondary_richness_lab(comfy_image_tensor, de_th=12, primary_ratio=0
     centers = np.array(centers)
     counts = np.array(counts)
 
+    # 8. 灰轴小合并
     centers, counts = final_grayline_merge(centers, counts)
 
+    # 9. 按占比排序
     order = np.argsort(counts)[::-1]
     centers = centers[order]
     counts = counts[order]
 
-    # lab → rgb
+    # 10. LAB → RGB 转换
     rgb_batch = lab2rgb(centers[:, None, None, :]).reshape(-1, 3)
     rgb_batch = (np.clip(rgb_batch * 255, 0, 255)).astype(int)
     colors_rgb = [tuple(x) for x in rgb_batch]
 
+    # 11. 计算占比
     total = np.sum(counts)
     ratios = counts / total
 
+    # 12. 筛选主/副色调
     primary = []
     secondary = []
 
@@ -309,7 +338,10 @@ def primary_secondary_richness_lab(comfy_image_tensor, de_th=12, primary_ratio=0
         elif r >= secondary_ratio:
             secondary.append(c)
 
-    return np_to_tuples(primary), np_to_tuples(secondary), get_richness(len(primary))
+    # 13. 计算丰富度
+    richness = get_richness(len(primary))
+
+    return np_to_tuples(primary), np_to_tuples(secondary), richness
 
 
 if __name__ == "__main__":
