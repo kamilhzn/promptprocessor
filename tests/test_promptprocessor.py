@@ -3,7 +3,7 @@
 """Tests for `promptprocessor` package."""
 
 import pytest
-from src.promptprocessor.nodes import Example
+from src.nodes import Example
 
 
 @pytest.fixture
