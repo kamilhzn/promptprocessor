@@ -1,5 +1,5 @@
 from inspect import cleandoc
-from .prompts import styles
+from .prompts import styles, using_prompt
 import random
 
 
@@ -65,23 +65,22 @@ class PromptEdit:
         return {
             "required": {
                 "mode": (["exchange", "remove", "fusion"], {"default": "exchange", "description": "选择编辑模式，交换、删除或融合"}),
-                "obj_str": ("STRING", {"default": "", "description": "要编辑的对象字符串"}),
+                "using_str": ("STRING", {"default": "", "description": "要编辑的对象用途词汇，如背景、手持物、饰品等"}),
             },
         }
 
-    RETURN_TYPES = ("String",)
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("编辑性语句",)
     DESCRIPTION = "Edit a prompt string."
     FUNCTION = "edit"
     CATEGORY = "Prompt Processor"
 
-    def edit(self, mode, obj_str):
+    def edit(self, mode, using_str):
         if mode == "exchange":
             return (
-                f"将图1中{obj_str}替换掉图2中的{obj_str}，保持图1的轮廓形状与纹理细节，通过改变其方向与透视来使图1的{obj_str}完美地融入图2",
+                f"将图1中{using_str}替换掉图2中的{using_str}，保持图1的轮廓形状与纹理细节，通过改变其方向与透视来使图1的{using_str}完美地融入图2",
             )
         elif mode == "remove":
-            return (f"将图2中的{obj_str}移除",)
+            return (f"将图2中的{using_str}移除",)
         elif mode == "fusion":
-            return (
-                f"将图1中的{obj_str}与图2中的{obj_str}融合，保持图1的轮廓形状与纹理细节,保持图2的整体构图与风格，通过改变其方向与透视来使图1的{obj_str}完美地融入图2",
-            )
+            return (using_prompt["fusion"][using_str],)
