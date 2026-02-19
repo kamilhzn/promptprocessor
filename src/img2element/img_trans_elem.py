@@ -1,43 +1,12 @@
-import torch, os
+from .model_and_lables import device, MODEL_CATEGORY, kind_labels, dynasty_labels
+import torch
 import torchvision.transforms.functional as F
 from torchvision import transforms
-from .primary_secendary_rgb_and_richness import primary_secondary_richness_lab
-import folder_paths
+from .lab import primary_secondary_richness_lab, get_finally_level
+import os, folder_paths
 import numpy as np
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-# 模型路径配置
-PATH = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.join(PATH, "/models/kind_dynasty.pt")
-MODEL_CATEGORY = "kind_dynasty"  # 自定义模型分类名
-# 注册模型目录到ComfyUI（让ComfyUI识别该目录）
-folder_paths.add_model_folder_path(MODEL_CATEGORY, os.path.join(folder_paths.models_dir, MODEL_CATEGORY))
-
-
-# 分类标签
-kind_labels = ["铜器", "金银器", "漆器", "珐琅器", "玉石器", "雕塑", "陶瓷", "其他"]
-dynasty_labels = [
-    "夏",
-    "商",
-    "周",
-    "春秋",
-    "战国",
-    "秦",
-    "汉",
-    "三国",
-    "晋",
-    "南北朝",
-    "隋",
-    "唐",
-    "五代十国",
-    "辽",
-    "宋",
-    "金",
-    "元",
-    "明",
-    "清",
-    "近现代",
-]
+import colorsys
+import json
 
 
 def lisan_output(kind_predict, kind_names):
@@ -78,55 +47,7 @@ class ResizeAndPad:
         return img
 
 
-def get_bbox_from_comfy_image(comfy_image, mask=None, alpha_threshold=1):
-    """
-    从ComfyUI的IMAGE张量中计算主体外接矩形的宽高比（width / height）
-    :param comfy_image: ComfyUI图片节点输出的张量，shape=[1, H, W, C]，取值范围0-1
-    :param mask: ComfyUI蒙版张量，shape=[B, H, W] 或 [H,W]，取值范围0-1（None则使用原图alpha）
-    :param alpha_threshold: 透明通道阈值（仅当无mask且图片有4通道时生效）
-    :return: 宽高比（width/height），无主体时返回None
-    """
-    # 处理ComfyUI张量格式：移除batch维度 + 转为numpy数组 + 缩放至0-255
-    img_tensor = comfy_image.squeeze(0)  # [H, W, C]
-    img_np = (img_tensor.cpu().numpy() * 255).astype(np.uint8)  # 转为0-255的numpy数组
-
-    # 使用mask筛选有效像素，无mask则用alpha通道
-    if mask is not None:
-        # 处理mask形状：统一转为 [H, W]
-        mask_tensor = mask.squeeze(0) if len(mask.shape) == 3 else mask  # 移除batch维度
-        mask_np = mask_tensor.cpu().numpy()  # [H, W]，0-1范围
-        ys, xs = np.where(mask_np > 0.0)  # 蒙版值>0的区域为有效主体
-    else:
-        # 无mask：用alpha通道（有则用，无则全选）
-        if img_np.shape[-1] == 4:
-            alpha = img_np[:, :, 3]
-            ys, xs = np.where(alpha > alpha_threshold)
-        else:
-            h, w = img_np.shape[:2]
-            ys, xs = np.meshgrid(np.arange(h), np.arange(w), indexing="ij")
-            ys = ys.flatten()
-            xs = xs.flatten()
-
-    # 检查是否有主体区域
-    if len(xs) == 0:
-        return None  # 无主体
-
-    # 计算外接矩形的边界
-    xmin, xmax = xs.min(), xs.max()
-    ymin, ymax = ys.min(), ys.max()
-
-    # 计算宽高和宽高比
-    width = xmax - xmin
-    height = ymax - ymin
-
-    if height == 0:
-        return None  # 避免除零错误
-
-    ratio = width / height
-    return ratio
-
-
-class ImageElementGet:
+class ImageElementGet_1:
     def __init__(self):
         """初始化：加载模型并设置为推理模式"""
         self.model = None
@@ -195,33 +116,133 @@ class ImageElementGet:
         model_list = folder_paths.get_filename_list(MODEL_CATEGORY)
         return {
             "required": {
-                "pic": ("IMAGE", {"description": "输入要提取元素的图像"}),
-                "model_name": (model_list if model_list else ["请放入模型到kind_dynasty目录"],),
-                "mask": ("MASK", {"description": "蒙版"}),
+                "pic": ("IMAGE", {"tooltip": "输入要提取元素的图像"}),
+                "model_path": (model_list if model_list else ["请放入材质、朝代预测模型到element_get目录"],),
+                "mask": ("MASK", {"tooltip": "蒙版"}),
             },
         }
 
-    RETURN_TYPES = ("STRING", "STRING", "STRING", "STRING", "STRING", "FLOAT")
-    RETURN_NAMES = ("文物类型", "所属朝代", "主色调", "副色调", "色彩丰富度", "宽高比")
+    RETURN_TYPES = ("STRING", "STRING", "STRING")
+    RETURN_NAMES = ("文物元素串", "主色调", "副色调")
     FUNCTION = "get_element"
-    CATEGORY = "Prompt Processor/image2prompt"
+    CATEGORY = "提示词处理/物体元素提取"
     DESCRIPTION = "Get a specific element from an image."
 
-    def get_element(self, pic, model_name, mask):
-        # 处理朝代与类型
-        self.load_model(model_name)  # 加载选择的模型
-        processed_img = self.preprocess_image(pic, mask)  # 图片预处理
+    def get_element(self, pic, model_path, mask):
+        # 初始化完整的字段字典
+        result_dict = {
+            "主色相": "",
+            # "主饱和度": "",
+            # "主亮度": "",
+            "副色相": "",
+            # "副饱和度": "",
+            # "副亮度": "",
+            "色彩丰富度": "",
+            "类别": "",
+            "用途": "",
+            "长宽比": "",
+            "朝代": "",
+            # "完整程度": "",
+            # "修补痕迹": "",
+            # "光泽": "",
+            # "图案性质": "",
+            # "锈蚀痕迹": ""
+        }
 
-        with torch.no_grad():  # 模型推理（关闭梯度计算加速）
+        # 处理颜色与丰富度
+        p, s, richness = primary_secondary_richness_lab(pic, mask, de_th=12, primary_ratio=0.1, secondary_ratio=0.01)
+
+        primary = []  # 中文版
+        primary_en = []  # 英文版
+        secondary = []  # 中文版
+        secondary_en = []  # 英文版
+
+        # 转换主色调
+        for c in p:
+            primary.append(self.map_rgb_to_discrete(c, english=False))
+            primary_en.append(self.map_rgb_to_discrete(c, english=True))
+
+        # 转换副色调
+        for c in s:
+            secondary.append(self.map_rgb_to_discrete(c, english=False))
+            secondary_en.append(self.map_rgb_to_discrete(c, english=True))
+
+        # 填充颜色相关字段 - 使用逗号分隔的字符串，而不是列表
+        result_dict["主色相"] = primary[0] if primary else ""
+        result_dict["副色相"] = secondary[0] if secondary else ""
+        result_dict["色彩丰富度"] = richness
+
+        # 处理朝代与类型
+        self.load_model(model_path)
+        processed_img = self.preprocess_image(pic, mask)
+
+        with torch.no_grad():
             output = self.model(processed_img)
 
         kind_result = lisan_output(output["kind"], kind_labels)
         dynasty_result = lisan_output(output["dynasty"], dynasty_labels)
 
-        # 处理颜色与丰富度
-        p, s, r = primary_secondary_richness_lab(pic, mask=mask)
+        # 填充类别和朝代
+        if kind_result:
+            result_dict["类别"] = kind_result
+        if dynasty_result:
+            result_dict["朝代"] = dynasty_result
 
         # 处理宽高比
-        ratio = get_bbox_from_comfy_image(pic, mask=mask, alpha_threshold=1)
+        hw_level = get_finally_level(pic, mask=mask)
+        result_dict["长宽比"] = hw_level if hw_level else "近方"
 
-        return (kind_result, dynasty_result, str(p), str(s), r, ratio if ratio else 0.0)
+        # 构建符合 DataFrame 解析格式的 JSON 字符串
+        input_string = json.dumps(result_dict, ensure_ascii=False)
+
+        # 主副色调使用英文版单词（逗号分隔的字符串）
+        primary_str = ",".join(primary_en) if primary_en else ""
+        secondary_str = ",".join(secondary_en) if secondary_en else ""
+
+        return (input_string, primary_str, secondary_str, str(richness), result_dict["长宽比"], result_dict["类别"], result_dict["朝代"])
+
+    def map_rgb_to_discrete(self, rgb, english=False):
+        """
+        将 RGB 三元组映射到离散颜色：红 橙 黄 绿 青 蓝 紫 黑 白 灰 棕
+        使用 HSV (h,s,v) 分区，并结合饱和度/明度判断黑白灰/棕。
+        返回中文或英文名称。
+        """
+        # rgb: (R,G,B) ints 0-255
+        r, g, b = [x / 255.0 for x in rgb]
+        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        h_deg = h * 360
+
+        # 先判定黑白灰
+        if v <= 0.18:
+            name = "黑" if not english else "black"
+            return name
+
+        if s <= 0.2:
+            if v >= 0.88:
+                name = "白" if not english else "white"
+            else:
+                name = "灰" if not english else "gray"
+            return name
+
+        # 棕色判定：色相偏橙/黄且明度偏低
+        if 15 <= h_deg < 50 and v < 0.6:
+            name = "棕" if not english else "brown"
+            return name
+
+        # 色相区间映射
+        if h_deg < 15 or h_deg >= 345:
+            name = "红" if not english else "red"
+        elif 15 <= h_deg < 45:
+            name = "橙" if not english else "orange"
+        elif 45 <= h_deg < 65:
+            name = "黄" if not english else "yellow"
+        elif 65 <= h_deg < 170:
+            name = "绿" if not english else "green"
+        elif 170 <= h_deg < 200:
+            name = "青" if not english else "cyan"
+        elif 200 <= h_deg < 260:
+            name = "蓝" if not english else "blue"
+        else:
+            name = "紫" if not english else "purple"
+
+        return name

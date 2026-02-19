@@ -5,7 +5,7 @@ __all__ = [
     "NODE_DISPLAY_NAME_MAPPINGS",
 ]
 
-__author__ = """Worldjks"""
+__author__ = """kamilhzn"""
 __email__ = "3436055238@qq.com"
 __version__ = "0.0.1"
 
