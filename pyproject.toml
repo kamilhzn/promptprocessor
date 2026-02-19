@@ -14,7 +14,11 @@ license = {text = "GNU General Public License v3"}
 requires-python = ">=3.10"
 classifiers = []
 dependencies = [
-
+    "pandas"
+    "xgboost",
+    "joblib",
+    "scikit-learn",
+    "skimage"
 ]
 
 
