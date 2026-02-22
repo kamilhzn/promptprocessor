@@ -7,7 +7,6 @@ MODEL_CATEGORY = "element_get"  # 自定义模型分类名
 # 注册模型目录到ComfyUI（让ComfyUI识别该目录）
 folder_paths.add_model_folder_path(MODEL_CATEGORY, os.path.join(folder_paths.models_dir, MODEL_CATEGORY))
 
-
 # 分类标签
 kind_labels = ["铜器", "金银器", "漆器", "珐琅器", "玉石器", "雕塑", "陶瓷", "其他"]
 dynasty_labels = [
@@ -34,3 +33,9 @@ dynasty_labels = [
 ]
 # 用途标签
 purpose = ["背景", "手持物", "手捧物", "饰品", "展示物"]
+# 完整度标签
+integrity = ["完整", "轻微缺损", "中度缺损", "重度缺损", "碎片"]
+# 修复程度标签
+repair = ["明显", "较明显", "适中", "较隐蔽", "无"]
+# 锈蚀程度标签
+corrosion = ["完全锈蚀", "大部分锈蚀", "部分锈蚀", "小部分锈蚀", "无锈蚀"]
