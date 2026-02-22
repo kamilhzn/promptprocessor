@@ -1,4 +1,4 @@
-from .model_and_lables import device, MODEL_CATEGORY, kind_labels, dynasty_labels
+from .path_and_lables import device, MODEL_CATEGORY, kind_labels, dynasty_labels, purpose, integrity, repair, corrosion
 import torch
 import torchvision.transforms.functional as F
 from torchvision import transforms
@@ -7,6 +7,44 @@ import os, folder_paths
 import numpy as np
 import colorsys
 import json
+
+# def lisan_output(kind_predict, kind_names):
+#     # 将输出转化成概率
+#     kind_predict = torch.softmax(kind_predict, dim=1)
+
+#     # 找到最大的概率
+#     max_kind, max_index = torch.max(kind_predict, dim=1)
+
+#     # 将张量移至cpu中处理并转化成numpy数组
+#     max_kind = max_kind.detach().cpu().numpy()
+#     max_index = max_index.detach().cpu().numpy()
+
+#     # 确定最大概率的名字
+#     max_classes = [kind_names[i] for i in max_index]
+
+#     return max_classes
+
+
+# 输入为BHWC的tensor数组，输出就是处理过并且模型接受的BCHW
+def preprocess(imgs):
+    """
+    输入:
+        imgs: Tensor (B, H, W, C)
+    输出:
+        Tensor (B, C, H, W)
+    """
+
+    # 1️⃣ BHWC → BCHW
+    imgs = imgs.permute(0, 3, 1, 2).contiguous()
+
+    imgs = imgs / 255.0
+
+    mean = torch.tensor([0.485, 0.456, 0.406], device=imgs.device).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225], device=imgs.device).view(1, 3, 1, 1)
+
+    imgs = (imgs - mean) / std
+
+    return imgs.to(device)
 
 
 def lisan_output(kind_predict, kind_names):
@@ -47,32 +85,48 @@ class ResizeAndPad:
         return img
 
 
-class ImageElementGet_1:
+class ImageElementGet:
     def __init__(self):
         """初始化：加载模型并设置为推理模式"""
-        self.model = None
+        self.kd_model = None
+        self.purpose_model = None
+        self.irc_model = None
         self.current_model_path = None  # 记录当前加载的模型路径，避免重复加载
 
-    def load_model(self, model_name):
-        """根据选择的模型名加载模型（带缓存，避免重复加载）"""
+    def load_model(self):
+        """加载模型（带缓存，避免重复加载）"""
+        kd_model_name = "kind_dynasty.pt"
+        purpose_model_name = "purpose.pt"
+        irc_model_name = "integrity_repair_corrosion.pt"
         # 获取模型的完整路径
-        model_path = folder_paths.get_full_path(MODEL_CATEGORY, model_name)
+        kd_model_path = folder_paths.get_full_path(MODEL_CATEGORY, kd_model_name)
+        purpose_model_path = folder_paths.get_full_path(MODEL_CATEGORY, purpose_model_name)
+        irc_model_path = folder_paths.get_full_path(MODEL_CATEGORY, irc_model_name)
 
         # 如果模型路径未变，无需重新加载
-        if self.current_model_path == model_path and self.model is not None:
-            return
+        # if self.current_model_path == model_path and self.model is not None:
+        #     return
 
         # 检查模型文件是否存在
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"模型文件未找到：{model_path}")
+        if not os.path.exists(kd_model_path):
+            raise FileNotFoundError(f"模型文件未找到：{kd_model_path}")
+        if not os.path.exists(purpose_model_path):
+            raise FileNotFoundError(f"模型文件未找到：{purpose_model_path}")
+        if not os.path.exists(irc_model_path):
+            raise FileNotFoundError(f"模型文件未找到：{irc_model_path}")
 
         # 加载模型并移至对应设备
-        self.model = torch.jit.load(model_path, map_location=device)
-        self.model = self.model.to(device)
-        self.model.eval()
+        self.kd_model = torch.jit.load(kd_model_path, map_location=device)
+        self.kd_model = self.kd_model.to(device)
+        self.kd_model.eval()
 
-        # 更新当前模型路径
-        self.current_model_path = model_path
+        self.purpose_model = torch.jit.load(purpose_model_path, map_location=device)
+        self.purpose_model = self.purpose_model.to(device)
+        self.purpose_model.eval()
+
+        self.irc_model = torch.jit.load(irc_model_path, map_location=device)
+        self.irc_model = self.irc_model.to(device)
+        self.irc_model.eval()
 
     def preprocess_image(self, comfy_image, mask=None):
         """处理ComfyUI格式的图片（结合mask裁剪有效区域）"""
@@ -113,11 +167,9 @@ class ImageElementGet_1:
 
     @classmethod
     def INPUT_TYPES(s):
-        model_list = folder_paths.get_filename_list(MODEL_CATEGORY)
         return {
             "required": {
                 "pic": ("IMAGE", {"tooltip": "输入要提取元素的图像"}),
-                "model_path": (model_list if model_list else ["请放入材质、朝代预测模型到element_get目录"],),
                 "mask": ("MASK", {"tooltip": "蒙版"}),
             },
         }
@@ -128,7 +180,9 @@ class ImageElementGet_1:
     CATEGORY = "提示词处理/物体元素提取"
     DESCRIPTION = "Get a specific element from an image."
 
-    def get_element(self, pic, model_path, mask):
+    def get_element(self, pic, mask):
+        # 加载模型
+        self.load_model()
         # 初始化完整的字段字典
         result_dict = {
             "主色相": "",
@@ -142,11 +196,11 @@ class ImageElementGet_1:
             "用途": "",
             "长宽比": "",
             "朝代": "",
-            # "完整程度": "",
-            # "修补痕迹": "",
+            "完整程度": "",
+            "修补痕迹": "",
             # "光泽": "",
             # "图案性质": "",
-            # "锈蚀痕迹": ""
+            "锈蚀痕迹": "",
         }
 
         # 处理颜色与丰富度
@@ -173,11 +227,11 @@ class ImageElementGet_1:
         result_dict["色彩丰富度"] = richness
 
         # 处理朝代与类型
-        self.load_model(model_path)
+        # self.load_model(model_path)
         processed_img = self.preprocess_image(pic, mask)
 
         with torch.no_grad():
-            output = self.model(processed_img)
+            output = self.kd_model(processed_img)
 
         kind_result = lisan_output(output["kind"], kind_labels)
         dynasty_result = lisan_output(output["dynasty"], dynasty_labels)
@@ -192,12 +246,35 @@ class ImageElementGet_1:
         hw_level = get_finally_level(pic, mask=mask)
         result_dict["长宽比"] = hw_level if hw_level else "近方"
 
-        # 构建符合 DataFrame 解析格式的 JSON 字符串
-        input_string = json.dumps(result_dict, ensure_ascii=False)
-
         # 主副色调使用英文版单词（逗号分隔的字符串）
         primary_str = ",".join(primary_en) if primary_en else ""
         secondary_str = ",".join(secondary_en) if secondary_en else ""
+
+        # 用途检测
+        pre_pic = preprocess(pic)
+        with torch.no_grad():
+            purpose_output = self.purpose_model(pre_pic)
+
+        purpose_result = lisan_output(purpose_output["purpose"], purpose)
+        if purpose_result:
+            result_dict["用途"] = purpose_result
+
+        # 完整度、修补痕迹、锈蚀痕迹检测
+        with torch.no_grad():
+            output = self.irc_model(pre_pic)
+
+        integrity_result = lisan_output(output["integrity"], integrity)
+        repair_result = lisan_output(output["repair"], repair)
+        corrosion_result = lisan_output(output["corrosion"], corrosion)
+        if integrity_result:
+            result_dict["完整程度"] = integrity_result
+        if repair_result:
+            result_dict["修补痕迹"] = repair_result
+        if corrosion_result:
+            result_dict["锈蚀痕迹"] = corrosion_result
+
+        # 构建符合 DataFrame 解析格式的 JSON 字符串
+        input_string = json.dumps(result_dict, ensure_ascii=False)
 
         return (input_string, primary_str, secondary_str, str(richness), result_dict["长宽比"], result_dict["类别"], result_dict["朝代"])
 
