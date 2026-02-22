@@ -68,33 +68,3 @@ class PromptEdit:
             return (f"将图2中的{using_str}移除",)
         elif mode == "fusion":
             return (using_prompt["fusion"][using_str],)
-
-
-class ElementCombine:
-    def __init__(self):
-        pass
-
-    @classmethod
-    def INPUT_TYPES(s):
-        return {
-            "required": {
-                "element1": ("STRING", {"default": "", "tooltip": "文物元素1"}),
-                "element2": ("STRING", {"default": "", "tooltip": "文物元素2"}),
-            },
-        }
-
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("文物元素串",)
-    DESCRIPTION = "Combine two element strings."
-    FUNCTION = "combine_elements"
-    CATEGORY = "提示词处理"
-
-    def combine_elements(self, element1, element2):
-        if element1 and element2:
-            return (f"{element1}，{element2}",)
-        elif element1:
-            return (element1,)
-        elif element2:
-            return (element2,)
-        else:
-            return ("",)
